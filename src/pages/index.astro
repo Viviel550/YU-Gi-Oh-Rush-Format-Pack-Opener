@@ -1,0 +1,474 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { env } from 'cloudflare:workers';
+import type { BoosterPack } from '../types/Boosterpack';
+
+// env bindings are NOT promises — no await needed
+const YUGIPEDIA_URL = env.BACKEND_URL;
+const PACKS_CACHE_KEY = 'booster_packs_list';
+let packs: BoosterPack[] = [];
+
+try {
+
+	if (env.YGO_KV) {
+        const cachedPacks = await env.YGO_KV.get(PACKS_CACHE_KEY);
+        if (cachedPacks) {
+            packs = JSON.parse(cachedPacks) as BoosterPack[];
+			console.log(packs + '\n -------------------------------------');
+        }
+    }
+	if (packs.length === 0) {
+		const query =
+			'[[Category:Yu-Gi-Oh! Rush Duel Booster Packs]]|?Japanese release date|?Set image|?Japanese set and region prefix|?Medium|limit=50';
+
+		const url = `${YUGIPEDIA_URL}?action=ask&format=json&origin=*&query=${encodeURIComponent(query)}`;
+
+		const response = await fetch(url, {
+			headers: {
+				'User-Agent': 'YGO-RushDuel-App/1.0 (272851@student.pwr.edu.pl)',
+				'Accept': 'application/json',
+			}
+		});
+
+		if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+		const data = await response.json();
+
+		if (data?.query?.results) {
+			packs = Object.values(data.query.results).map((item: any) => {
+				const printouts = item.printouts || {};
+            
+				const imageName = printouts['Set image']?.[0];
+				const imgUrl = imageName
+					? `https://yugipedia.com/index.php?/Special:FilePath/${imageName}`
+					: null;
+				const releaseData = printouts['Japanese release date']?.[0];
+				const timestamp = releaseData ? parseInt(releaseData.timestamp, 10) : 0;
+
+				return {
+					id:        item.fulltext,
+					title:     item.displaytitle || item.fulltext,
+					url:       item.fullurl,
+					imgUrl,
+					timestamp,
+					prefix:    printouts['Japanese set and region prefix']?.[0] || 'TBA',
+					medium:    printouts['Medium']?.[0] || null,
+				} satisfies BoosterPack;
+			});
+
+			if (env.YGO_KV && packs.length > 0) {
+                await env.YGO_KV.put(PACKS_CACHE_KEY, JSON.stringify(packs), {
+                    expirationTtl: 86400,
+                });
+            }
+		}
+	}
+} catch (error) {
+    console.error('Failed to fetch booster packs:', error);
+}
+
+// Pre-sort server-side by newest first — avoids client-side flash on load
+packs.sort((a, b) => b.timestamp - a.timestamp);
+---
+
+<Layout title="Rush Duel Pack Simulator">
+    <header class="control-header">
+        <div class="brand">
+            <span class="rush-badge">RUSH DUEL</span>
+            <h1>Booster Packs</h1>
+        </div>
+
+        <div class="action-panel">
+            <div class="sort-control">
+                <label for="sort-select">Sort By:</label>
+                <select id="sort-select">
+                    <option value="date-new">Release Date (Newest)</option>
+                    <option value="date-old">Release Date (Oldest)</option>
+                    <option value="name-asc">Name (A–Z)</option>
+                    <option value="name-desc">Name (Z–A)</option>
+                </select>
+            </div>
+
+            <div class="total-status">
+                Selected: <span id="global-count">0</span> / 50 Packs
+            </div>
+
+            <button id="open-packs-btn" class="btn-open-disabled" disabled>
+                OPEN SELECTED
+            </button>
+        </div>
+    </header>
+    {packs.length === 0 ? (
+        <div class="error-state">
+            <p>No booster packs detected. Check backend connection.</p>
+        </div>
+    ) : (
+        <div class="packs-grid" id="main-grid">
+            {packs.map((pack) => (
+                <div
+                    class="pack-card"
+                    data-pack-id={pack.id}
+                    data-name={pack.title}
+                    data-timestamp={pack.timestamp}
+                >
+                    <div class="pack-inner">
+                        <div class="pack-header">
+                            <span class="pack-prefix">{pack.prefix}</span>
+                            <h3 class="pack-title">{pack.title}</h3>
+                        </div>
+
+                        <div class="pack-art-container">
+                            {pack.imgUrl ? (
+                                <img src={pack.imgUrl} alt={pack.title} loading="lazy" />
+                            ) : (
+                                <div class="matrix-code">IMAGE NOT FOUND</div>
+                            )}
+                        </div>
+
+                        <div class="counter-control">
+                            <button class="counter-btn minus" type="button">−</button>
+                            <input
+                                type="number"
+                                class="pack-input"
+                                value="0"
+                                min="0"
+                                max="50"
+                                readonly
+                            />
+                            <button class="counter-btn plus" type="button">+</button>
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+    )}
+</Layout>
+
+<script>
+    const MAX_GLOBAL_PACKS = 50;
+
+    // Typed map so TS doesn't complain on index access
+    const selectedPacks = new Map<string, number>();
+
+    const openBtn    = document.getElementById('open-packs-btn') as HTMLButtonElement | null;
+    const globalCountEl = document.getElementById('global-count');
+    const grid       = document.getElementById('main-grid');
+    const sortSelect = document.getElementById('sort-select') as HTMLSelectElement | null;
+
+    // Keep card references in an array for sorting — never recreate DOM nodes
+    let packCards = Array.from(document.querySelectorAll<HTMLElement>('.pack-card'));
+
+    // ── SORTING ──────────────────────────────────────────────────────────────
+    // Uses a document fragment so only ONE reflow happens, and existing nodes
+    // are moved (not cloned), so all event listeners stay intact.
+    function sortPacks(method: string) {
+        if (!grid) return;
+
+        packCards.sort((a, b) => {
+            const nameA  = a.dataset.name      || '';
+            const nameB  = b.dataset.name      || '';
+            const timeA  = parseInt(a.dataset.timestamp || '0', 10);
+            const timeB  = parseInt(b.dataset.timestamp || '0', 10);
+
+            switch (method) {
+                case 'name-asc':  return nameA.localeCompare(nameB);
+                case 'name-desc': return nameB.localeCompare(nameA);
+                case 'date-old':  return timeA - timeB;
+                case 'date-new':
+                default:          return timeB - timeA;
+            }
+        });
+
+        // Move nodes into a fragment first, then append once — preserves listeners
+        const fragment = document.createDocumentFragment();
+        packCards.forEach(card => fragment.appendChild(card));
+        grid.appendChild(fragment);
+    }
+
+    // ── GLOBAL UI ────────────────────────────────────────────────────────────
+    function updateGlobalUI() {
+        let total = 0;
+        selectedPacks.forEach(v => total += v);
+
+        if (globalCountEl) globalCountEl.textContent = total.toString();
+
+        if (openBtn) {
+            openBtn.disabled  = total === 0;
+            openBtn.className = total > 0 ? 'btn-open-active' : 'btn-open-disabled';
+        }
+    }
+
+    // ── COUNTER LOGIC ────────────────────────────────────────────────────────
+    packCards.forEach(card => {
+        const packId  = card.dataset.packId || '';
+        const input   = card.querySelector<HTMLInputElement>('.pack-input')!;
+        const plusBtn = card.querySelector<HTMLButtonElement>('.plus');
+        const minusBtn = card.querySelector<HTMLButtonElement>('.minus');
+
+        function changeCount(amount: number) {
+            let total = 0;
+            selectedPacks.forEach(v => total += v);
+
+            const current = selectedPacks.get(packId) ?? 0;
+
+            if (amount > 0 && total >= MAX_GLOBAL_PACKS) return;
+            if (amount < 0 && current <= 0) return;
+
+            const next = current + amount;
+            input.value = next.toString();
+
+            if (next > 0) {
+                selectedPacks.set(packId, next);
+                card.classList.add('has-selection');
+            } else {
+                selectedPacks.delete(packId);
+                card.classList.remove('has-selection');
+            }
+
+            updateGlobalUI();
+        }
+
+        plusBtn?.addEventListener('click',  () => changeCount(1));
+        minusBtn?.addEventListener('click', () => changeCount(-1));
+    });
+
+    // ── SORT LISTENER ────────────────────────────────────────────────────────
+    // Attach AFTER counters are wired up, so sorting never breaks them
+    sortSelect?.addEventListener('change', e => {
+        sortPacks((e.target as HTMLSelectElement).value);
+    });
+    // No initial sortPacks() call needed — server already sorted by date-new
+
+    // ── OPEN PACKS ───────────────────────────────────────────────────────────
+    openBtn?.addEventListener('click', async () => {
+		if (!openBtn) return;
+		openBtn.disabled    = true;
+		openBtn.textContent = 'GENERATING...';
+
+		try {
+			const payload = Object.fromEntries(selectedPacks);
+
+			const response = await fetch('/api/open-packs', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ packs: payload }),
+			});
+
+			if (!response.ok) throw new Error('API processing failure');
+
+			// Cookie is set server-side — just redirect
+			window.location.href = '/packs';
+
+		} catch (error) {
+			console.error('Error opening packs:', error);
+			alert('Matrix connection lost. Try again.');
+			openBtn.disabled    = false;
+			openBtn.textContent = 'OPEN SELECTED';
+			updateGlobalUI();
+		}
+	});
+</script>
+
+<style>
+    .control-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1rem;
+        width: 100%;
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+        border-bottom: 2px solid #1c1c24;
+    }
+
+    .brand h1 {
+        font-family: var(--font-display);
+        font-size: 1.8rem;
+        margin: 0;
+        text-transform: uppercase;
+        color: var(--text-primary);
+    }
+
+    .rush-badge {
+        font-family: var(--font-display);
+        font-size: 0.75rem;
+        background: #ef4444;
+        color: #fff;
+        padding: 0.15rem 0.5rem;
+        font-weight: 900;
+        letter-spacing: 0.1em;
+        border-radius: 2px;
+    }
+
+    .action-panel {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 1.5rem;
+        background: var(--bg-card-slot);
+        padding: 0.5rem 1rem;
+        border-radius: 4px;
+        border: 1px solid #27273a;
+    }
+
+    .sort-control {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+        border-right: 1px solid #3b3b54;
+        padding-right: 1.5rem;
+    }
+
+    .sort-control select {
+        background: var(--bg-void);
+        color: var(--text-primary);
+        border: 1px solid #3b3b54;
+        padding: 0.25rem 0.5rem;
+        font-family: var(--font-body);
+        border-radius: 4px;
+        outline: none;
+    }
+
+    .sort-control select:focus { border-color: var(--cyber-blue); }
+
+    .total-status { font-size: 1.1rem; font-weight: 600; }
+
+    #global-count {
+        color: var(--millennium-gold);
+        font-family: var(--font-display);
+        font-weight: 700;
+    }
+
+    .btn-open-disabled {
+        background: #1f1f2e;
+        color: var(--text-muted);
+        border: 1px solid #2d2d3f;
+        padding: 0.75rem 1.5rem;
+        font-family: var(--font-display);
+        font-weight: 700;
+        cursor: not-allowed;
+    }
+
+    .btn-open-active {
+        background: var(--millennium-gold);
+        color: #000;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        font-family: var(--font-display);
+        font-weight: 900;
+        cursor: pointer;
+        box-shadow: 0 0 15px var(--gold-glow);
+    }
+
+    .packs-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 1.5rem;
+        width: 100%;
+    }
+
+    .pack-card {
+        background: var(--bg-card-slot);
+        border: 1px solid #232330;
+        border-radius: 6px;
+        padding: 1rem;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .pack-card:hover { border-color: #3b3b54; transform: translateY(-4px); }
+
+    .pack-card.has-selection {
+        border-color: var(--millennium-gold);
+        box-shadow: 0 0 12px rgba(245, 185, 20, 0.15);
+    }
+
+    .pack-header { height: 3.5rem; margin-bottom: 0.5rem; }
+
+    .pack-prefix {
+        font-size: 0.7rem;
+        color: var(--cyber-blue);
+        font-family: var(--font-display);
+        display: block;
+        margin-bottom: 0.25rem;
+    }
+
+    .pack-title {
+        font-family: var(--font-display);
+        font-size: 0.9rem;
+        margin: 0;
+        line-height: 1.2;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
+    .pack-art-container {
+        background: #0d0d13;
+        height: 240px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        margin-bottom: 1rem;
+        border: 1px dashed #1e1e2d;
+        overflow: hidden;
+    }
+
+    .pack-art-container img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
+    }
+
+    .matrix-code { font-size: 0.7rem; color: #3b3b54; font-family: var(--font-display); }
+
+    .counter-control {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: var(--bg-void);
+        border: 1px solid #1e1e2a;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    .counter-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-primary);
+        font-size: 1.2rem;
+        width: 35px;
+        height: 35px;
+        cursor: pointer;
+    }
+
+    .counter-btn:hover { background: #1c1c2b; color: var(--millennium-gold); }
+
+    .pack-input {
+        width: 50px;
+        background: transparent;
+        border: none;
+        color: #fff;
+        text-align: center;
+        font-family: var(--font-display);
+        font-size: 1rem;
+        font-weight: 700;
+    }
+
+    .pack-input::-webkit-outer-spin-button,
+    .pack-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+    .error-state {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        padding: 4rem;
+        color: var(--text-muted);
+        font-family: var(--font-display);
+    }
+</style>

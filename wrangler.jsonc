@@ -1,0 +1,28 @@
+{
+	"compatibility_date": "2026-06-08",
+	"compatibility_flags": [
+		"global_fetch_strictly_public"
+	],
+	"name": "ygo-backend",
+	"main": "@astrojs/cloudflare/entrypoints/server",
+	"assets": {
+		"directory": "./dist",
+		"binding": "ASSETS"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"BACKEND_URL": "https://yugipedia.com/api.php"
+	},
+	"kv_namespaces": [
+		{
+			"binding": "SESSION",
+			"id": "73791c5be1fa4c9ca402fd94e9a755aa"
+		},
+		{
+			"binding": "YGO_KV",
+			"id": "540a6cd5a06845dfa436de227dcc1760"
+		}
+	]
+}

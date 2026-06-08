@@ -1,0 +1,279 @@
+---
+import Layout from '../layouts/Layout.astro';
+import type { PackOpeningResult } from '../types/Packs'
+import { env } from 'cloudflare:workers';
+
+const sessionId = Astro.cookies.get('pack_opening_id')?.value;
+
+let rawResults: PackOpeningResult[] = [];
+if (sessionId) {
+    try {
+        const cached = await env.YGO_KV.get(`session:${sessionId}`);
+        if (cached) {
+            rawResults = JSON.parse(cached);
+        }
+    } catch {
+        // malformed cookie or KV fetch error — treat as empty
+    }
+}
+
+if (rawResults.length === 0) return Astro.redirect('/');
+
+// ── 1. GROUP PACKS BY NAME & SORT CARDS ──────────────────────────────────────
+const groupedMap = new Map<string, PackOpeningResult['cards']>();
+
+for (const result of rawResults) {
+    if (!groupedMap.has(result.packName)) {
+        groupedMap.set(result.packName, []);
+    }
+    // Combine cards into the same pack group array
+    groupedMap.get(result.packName)!.push(...result.cards);
+}
+
+// Transform map back to array format and sort cards inside each pack alphabetically
+const results: PackOpeningResult[] = Array.from(groupedMap.entries()).map(([packName, cards]) => {
+    const sortedCards = [...cards].sort((a, b) => a.cardName.localeCompare(b.cardName));
+    return {
+        packName,
+        cards: sortedCards
+    };
+});
+
+const totalCards = results.reduce((sum, p) => sum + p.cards.length, 0);
+
+// Rarity → CSS class for glow effect
+const rarityClass: Record<string, string> = {
+    'Common':               'rarity-common',
+    'Rare':                 'rarity-rare',
+    'Super Rare':           'rarity-super',
+    'Ultra Rare':           'rarity-ultra',
+    'Secret Rare':          'rarity-secret',
+    'Over Rush Rare':       'rarity-over-rush',
+    'Super Parallel Rare':  'rarity-parallel',
+    'Ultra Parallel Rare':  'rarity-parallel',
+};
+---
+
+<Layout title="Pack Opening Results">
+    <header class="results-header">
+        <div class="brand">
+            <span class="rush-badge">RUSH DUEL</span>
+            <h1>Pack Opening</h1>
+        </div>
+        <div class="summary">
+            <span>{rawResults.length} pack{rawResults.length !== 1 ? 's' : ''} opened</span>
+            <span class="sep">·</span>
+            <span>{totalCards} cards pulled</span>
+        </div>
+        <a href="/" class="btn-back">← Open More</a>
+    </header>
+
+    {results.length === 0 ? (
+        <div class="empty-state">
+            <p>No pack opening data found.</p>
+            <a href="/">Go back and select packs</a>
+        </div>
+    ) : (
+        <div class="opening-results">
+            {results.map((pack) => (
+                <section class="pack-section">
+                    <h2 class="pack-section-title">
+                        <span class="pack-icon">📦</span>
+                        {pack.packName} 
+                        <span class="pack-count-badge">
+                            ({pack.cards.length} cards)
+                        </span>
+                    </h2>
+
+                    <div class="cards-grid">
+                        {pack.cards.map((card) => (
+                            <div class={`card-result ${rarityClass[card.rarity] ?? 'rarity-common'}`}>
+                                <div class="card-img-wrap">
+                                    {card.imgUrl ? (
+                                        <img
+                                            src={card.imgUrl}
+                                            alt={card.cardName}
+                                            loading="lazy"
+                                            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+                                        />
+                                    ) : null}
+                                    <div class="card-img-fallback" style="display:none">
+                                        {card.cardNumber}
+                                    </div>
+                                </div>
+
+                                <div class="card-info">
+                                    <span class="card-name" title={card.cardName}>{card.cardName}</span>
+                                    <span class="card-number">{card.cardNumber}</span>
+                                    <span class={`card-rarity ${rarityClass[card.rarity] ?? 'rarity-common'}`}>
+                                        {card.rarity}
+                                    </span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </section>
+            ))}
+        </div>
+    )}
+</Layout>
+
+<style>
+    .results-header {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        padding-bottom: 1.5rem;
+        margin-bottom: 2rem;
+        border-bottom: 2px solid #1c1c24;
+    }
+
+    .results-header .brand { flex: 1; }
+
+    .summary {
+        font-size: 0.95rem;
+        color: var(--text-muted);
+    }
+
+    .sep { margin: 0 0.4rem; opacity: 0.4; }
+
+    .btn-back {
+        font-family: var(--font-display);
+        font-size: 0.85rem;
+        color: var(--cyber-blue);
+        text-decoration: none;
+        border: 1px solid var(--cyber-blue);
+        padding: 0.4rem 0.9rem;
+        border-radius: 3px;
+        transition: background 0.2s;
+    }
+
+    .btn-back:hover { background: rgba(0,200,255,0.08); }
+
+    .pack-section { margin-bottom: 3rem; }
+
+    .pack-section-title {
+        font-family: var(--font-display);
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .pack-count-badge {
+        font-size: 0.85rem;
+        text-transform: none;
+        letter-spacing: normal;
+        color: var(--cyber-blue);
+        font-weight: normal;
+    }
+
+    .cards-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 1rem;
+    }
+
+    .card-result {
+        background: var(--bg-card-slot);
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid #232330;
+        transition: transform 0.2s;
+    }
+
+    .card-result:hover { transform: translateY(-4px); }
+
+    .card-img-wrap {
+        background: #0d0d13;
+        aspect-ratio: 59/86;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .card-img-wrap img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .card-img-fallback {
+        font-size: 0.6rem;
+        color: #3b3b54;
+        font-family: var(--font-display);
+        text-align: center;
+        padding: 0.5rem;
+    }
+
+    .card-info {
+        padding: 0.5rem 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+    }
+
+    .card-name {
+        font-family: var(--font-display);
+        font-size: 0.72rem;
+        line-height: 1.2;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
+    .card-number {
+        font-size: 0.6rem;
+        color: var(--text-muted);
+        font-family: var(--font-display);
+    }
+
+    .card-rarity {
+        font-size: 0.62rem;
+        font-family: var(--font-display);
+        font-weight: 700;
+        letter-spacing: 0.05em;
+    }
+
+    /* ── Rarity colors ── */
+    .rarity-common    { border-color: #3b3b54; }
+    .rarity-common .card-rarity  { color: #888; }
+
+    .rarity-rare      { border-color: #4a90d9; }
+    .rarity-rare .card-rarity    { color: #4a90d9; }
+
+    .rarity-super     { border-color: #a0c4ff; box-shadow: 0 0 8px rgba(160,196,255,0.2); }
+    .rarity-super .card-rarity   { color: #a0c4ff; }
+
+    .rarity-ultra     { border-color: var(--millennium-gold); box-shadow: 0 0 10px rgba(245,185,20,0.2); }
+    .rarity-ultra .card-rarity   { color: var(--millennium-gold); }
+
+    .rarity-secret    { border-color: #e879f9; box-shadow: 0 0 12px rgba(232,121,249,0.25); }
+    .rarity-secret .card-rarity  { color: #e879f9; }
+
+    .rarity-over-rush { border-color: #ff4444; box-shadow: 0 0 14px rgba(255,68,68,0.3); }
+    .rarity-over-rush .card-rarity { color: #ff4444; }
+
+    .rarity-parallel  { border-color: #7efff5; box-shadow: 0 0 12px rgba(126,255,245,0.2); }
+    .rarity-parallel .card-rarity { color: #7efff5; }
+
+    .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        padding: 4rem;
+        color: var(--text-muted);
+        font-family: var(--font-display);
+    }
+
+    .empty-state a { color: var(--cyber-blue); }
+</style>
