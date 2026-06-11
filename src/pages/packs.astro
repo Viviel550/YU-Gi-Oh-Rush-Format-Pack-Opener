@@ -1,7 +1,21 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import type { PackOpeningResult } from '../types/Packs'
+import type { PackOpeningResult } from '../types/Packs';
 import { env } from 'cloudflare:workers';
+
+// Extend the core card type to include our runtime display count
+interface StackedCard {
+    cardName: string;
+    cardNumber: string;
+    rarity: string;
+    imgUrl: string;
+    count: number;
+}
+
+interface StackedPackOpeningResult {
+    packName: string;
+    cards: StackedCard[];
+}
 
 const sessionId = Astro.cookies.get('pack_opening_id')?.value;
 
@@ -19,27 +33,46 @@ if (sessionId) {
 
 if (rawResults.length === 0) return Astro.redirect('/');
 
-// ── 1. GROUP PACKS BY NAME & SORT CARDS ──────────────────────────────────────
-const groupedMap = new Map<string, PackOpeningResult['cards']>();
+// ── 1. GROUP PACKS BY NAME & STACK IDENTICAL DUPES ───────────────────────────
+const groupedMap = new Map<string, Map<string, StackedCard>>();
 
 for (const result of rawResults) {
     if (!groupedMap.has(result.packName)) {
-        groupedMap.set(result.packName, []);
+        groupedMap.set(result.packName, new Map<string, StackedCard>());
     }
-    // Combine cards into the same pack group array
-    groupedMap.get(result.packName)!.push(...result.cards);
+    
+    const packCardsMap = groupedMap.get(result.packName)!;
+
+    for (const card of result.cards) {
+        // Group by Name AND Rarity (so different rarities of the same card don't merge)
+        const uniqueKey = `${card.cardName}___${card.rarity}`;
+        
+        if (packCardsMap.has(uniqueKey)) {
+            packCardsMap.get(uniqueKey)!.count += 1;
+        } else {
+            packCardsMap.set(uniqueKey, {
+                cardName: card.cardName,
+                cardNumber: card.cardNumber,
+                rarity: card.rarity ?? 'Common',
+                imgUrl: card.imgUrl,
+                count: 1
+            });
+        }
+    }
 }
 
-// Transform map back to array format and sort cards inside each pack alphabetically
-const results: PackOpeningResult[] = Array.from(groupedMap.entries()).map(([packName, cards]) => {
-    const sortedCards = [...cards].sort((a, b) => a.cardName.localeCompare(b.cardName));
+// Transform map back to array and sort alphabetically by name
+const results: StackedPackOpeningResult[] = Array.from(groupedMap.entries()).map(([packName, cardsMap]) => {
+    const sortedCards = Array.from(cardsMap.values()).sort((a, b) => 
+        a.cardName.localeCompare(b.cardName)
+    );
     return {
         packName,
         cards: sortedCards
     };
 });
 
-const totalCards = results.reduce((sum, p) => sum + p.cards.length, 0);
+const totalCards = rawResults.reduce((sum, p) => sum + p.cards.length, 0);
 
 // Rarity → CSS class for glow effect
 const rarityClass: Record<string, string> = {
@@ -81,7 +114,7 @@ const rarityClass: Record<string, string> = {
                         <span class="pack-icon">📦</span>
                         {pack.packName} 
                         <span class="pack-count-badge">
-                            ({pack.cards.length} cards)
+                            ({pack.cards.length} unique items)
                         </span>
                     </h2>
 
@@ -100,6 +133,13 @@ const rarityClass: Record<string, string> = {
                                     <div class="card-img-fallback" style="display:none">
                                         {card.cardNumber}
                                     </div>
+                                    
+                                    {/* Dupe Multiplier Counter Badge */}
+                                    {card.count > 1 && (
+                                        <div class="card-count-badge">
+                                            {card.count}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div class="card-info">
@@ -190,6 +230,7 @@ const rarityClass: Record<string, string> = {
     .card-result:hover { transform: translateY(-4px); }
 
     .card-img-wrap {
+        position: relative; /* Context parent for positioning the absolute badge circle */
         background: #0d0d13;
         aspect-ratio: 59/86;
         display: flex;
@@ -202,6 +243,45 @@ const rarityClass: Record<string, string> = {
         width: 100%;
         height: 100%;
         object-fit: cover;
+    }
+
+    /* ── Dupe Multiplier Overlay Styling ── */
+    .card-count-badge {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        background: #11111b;
+        color: var(--cyber-blue);
+        border: 2px solid var(--cyber-blue);
+        font-family: var(--font-display), system-ui, sans-serif;
+        font-size: 0.8rem;
+        font-weight: 900;
+        min-width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 4px;
+        box-shadow: 0 0 10px rgba(0, 200, 255, 0.4), inset 0 0 4px rgba(0, 200, 255, 0.2);
+        z-index: 2;
+    }
+
+    /* Subtle styling tint adjustments for premium gold tiers */
+    .rarity-ultra .card-count-badge {
+        color: var(--millennium-gold);
+        border-color: var(--millennium-gold);
+        box-shadow: 0 0 10px rgba(245, 185, 20, 0.4);
+    }
+    .rarity-secret .card-count-badge {
+        color: #e879f9;
+        border-color: #e879f9;
+        box-shadow: 0 0 10px rgba(232, 121, 249, 0.4);
+    }
+    .rarity-over-rush .card-count-badge {
+        color: #ff4444;
+        border-color: #ff4444;
+        box-shadow: 0 0 10px rgba(255, 68, 68, 0.4);
     }
 
     .card-img-fallback {
