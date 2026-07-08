@@ -4,6 +4,7 @@ export interface BoosterPack {
     url:       string;
     imgUrl:    string | null;
     timestamp: number;
+    region: 'JP' | 'KR' | null;
     prefix:    string;
     medium:    string | null;
 }

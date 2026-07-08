@@ -8,7 +8,8 @@ interface StackedCard {
     cardName: string;
     cardNumber: string;
     rarity: string;
-    imgUrl: string;
+    databaseId: number | null;
+    imgUrl: string | null ;
     count: number;
 }
 
@@ -44,9 +45,8 @@ for (const result of rawResults) {
     const packCardsMap = groupedMap.get(result.packName)!;
 
     for (const card of result.cards) {
-        // Group by Name AND Rarity (so different rarities of the same card don't merge)
         const uniqueKey = `${card.cardName}___${card.rarity}`;
-        
+
         if (packCardsMap.has(uniqueKey)) {
             packCardsMap.get(uniqueKey)!.count += 1;
         } else {
@@ -54,6 +54,7 @@ for (const result of rawResults) {
                 cardName: card.cardName,
                 cardNumber: card.cardNumber,
                 rarity: card.rarity ?? 'Common',
+                databaseId: card.databaseId ?? null,
                 imgUrl: card.imgUrl,
                 count: 1
             });
@@ -98,6 +99,7 @@ const rarityClass: Record<string, string> = {
             <span class="sep">·</span>
             <span>{totalCards} cards pulled</span>
         </div>
+        <button id="export-ydk-btn" class="btn-back" type="button">⬇ Export .ydk</button>
         <a href="/" class="btn-back">← Open More</a>
     </header>
 
@@ -120,7 +122,11 @@ const rarityClass: Record<string, string> = {
 
                     <div class="cards-grid">
                         {pack.cards.map((card) => (
-                            <div class={`card-result ${rarityClass[card.rarity] ?? 'rarity-common'}`}>
+                            <div
+                                class={`card-result ${rarityClass[card.rarity] ?? 'rarity-common'}`}
+                                data-database-id={card.databaseId ?? ''}
+                                data-count={card.count}
+                            >
                                 <div class="card-img-wrap">
                                     {card.imgUrl ? (
                                         <img
@@ -157,8 +163,60 @@ const rarityClass: Record<string, string> = {
         </div>
     )}
 </Layout>
+<script>
+    const exportBtn = document.getElementById('export-ydk-btn') as HTMLButtonElement | null;
+
+    exportBtn?.addEventListener('click', () => {
+        const cardEls = document.querySelectorAll<HTMLElement>('.card-result[data-database-id]');
+
+        const ids: number[] = [];
+
+        cardEls.forEach(el => {
+            const rawId = el.dataset.databaseId;
+            const count = parseInt(el.dataset.count || '1', 10);
+
+            if (!rawId) return; // skip cards with no matched databaseId
+
+            const id = parseInt(rawId, 10);
+            if (!Number.isFinite(id)) return;
+
+            for (let i = 0; i < count; i++) {
+                ids.push(id);
+            }
+        });
+
+        if (ids.length === 0) {
+            alert('No cards with a valid database ID to export.');
+            return;
+        }
+
+        const fileContent = ['#main', ...ids.map(id => id.toString())].join('\n');
+        const blob = new Blob([fileContent], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `rush_duel_pull_${new Date().toISOString().slice(0, 10)}.ydk`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        URL.revokeObjectURL(url);
+    });
+</script>
 
 <style>
+    #export-ydk-btn {
+        color: var(--millennium-gold);
+        border-color: var(--millennium-gold);
+        cursor: pointer;
+        background: none;
+        font-family: var(--font-display);
+    }
+
+    #export-ydk-btn:hover {
+        background: rgba(245, 185, 20, 0.08);
+    }
     .results-header {
         display: flex;
         align-items: center;

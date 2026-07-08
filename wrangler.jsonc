@@ -13,7 +13,8 @@
 		"enabled": true
 	},
 	"vars": {
-		"BACKEND_URL": "https://yugipedia.com/api.php"
+		"BACKEND_URL": "https://yugipedia.com/api.php",
+		"IMAGES_DB": ""
 	},
 	"kv_namespaces": [
 		{

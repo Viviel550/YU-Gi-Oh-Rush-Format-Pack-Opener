@@ -7,4 +7,5 @@ declare namespace App {
 interface Env {
 	BACKEND_URL: string;
 	YGO_KV: KVNamespace;
+	IMAGES_DB: string;
 }

@@ -5,21 +5,33 @@ import type { BoosterPack } from '../types/Boosterpack';
 
 // env bindings are NOT promises — no await needed
 const YUGIPEDIA_URL = env.BACKEND_URL;
+const IMAGE_URL = env.IMAGE_DB;
 const PACKS_CACHE_KEY = 'booster_packs_list';
 let packs: BoosterPack[] = [];
+//const debugInfo: any[] = [];
+function extractTimestamp(entry: any): number | null {
+    if (!entry) return null;
+    const ts = parseInt(entry.timestamp, 10);
+    return Number.isFinite(ts) && ts > 0 ? ts : null;
+}
+
+function extractPrefix(entry: any): string | null {
+    if (typeof entry !== 'string') return null;
+    const trimmed = entry.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
 
 try {
 
-	if (env.YGO_KV) {
+	/*if (env.YGO_KV) {
         const cachedPacks = await env.YGO_KV.get(PACKS_CACHE_KEY);
         if (cachedPacks) {
             packs = JSON.parse(cachedPacks) as BoosterPack[];
-			console.log(packs + '\n -------------------------------------');
         }
-    }
+    }*/
 	if (packs.length === 0) {
 		const query =
-			'[[Category:Yu-Gi-Oh! Rush Duel Booster Packs]]|?Japanese release date|?Set image|?Japanese set and region prefix|?Medium|limit=50';
+			'[[Category:Yu-Gi-Oh! Rush Duel Booster Packs]]|?Japanese release date|?Korean release date|?Set image|?Japanese set and region prefix|?Korean set and region prefix|?Medium|limit=50';
 
 		const url = `${YUGIPEDIA_URL}?action=ask&format=json&origin=*&query=${encodeURIComponent(query)}`;
 
@@ -33,34 +45,43 @@ try {
 		if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 
 		const data = await response.json();
-
+        
 		if (data?.query?.results) {
 			packs = Object.values(data.query.results).map((item: any) => {
 				const printouts = item.printouts || {};
-            
+                //for debugs
+                /*debugInfo.push({
+                    title: item.fulltext,
+                    jpPrefix: printouts['Japanese set and region prefix'],
+                    krPrefix: printouts['Korean set and region prefix'],
+                });*/
 				const imageName = printouts['Set image']?.[0];
-				const imgUrl = imageName
-					? `https://yugipedia.com/index.php?/Special:FilePath/${imageName}`
-					: null;
-				const releaseData = printouts['Japanese release date']?.[0];
-				const timestamp = releaseData ? parseInt(releaseData.timestamp, 10) : 0;
-
+				const imgUrl = IMAGE_URL + `/${imageName}`;
+				const jpTimestamp = extractTimestamp(printouts['Japanese release date']?.[0]);
+                const krTimestamp = extractTimestamp(printouts['Korean release date']?.[0]);
+                const timestamp = jpTimestamp ?? krTimestamp ?? 0;
+                const region: 'JP' | 'KR' | null = jpTimestamp ? 'JP' : krTimestamp ? 'KR' : null;
+                const prefix =
+                    extractPrefix(printouts['Japanese set and region prefix']?.[0]) ??
+                    extractPrefix(printouts['Korean set and region prefix']?.[0]) ??
+                    'TBA';
 				return {
 					id:        item.fulltext,
 					title:     item.displaytitle || item.fulltext,
 					url:       item.fullurl,
 					imgUrl,
 					timestamp,
-					prefix:    printouts['Japanese set and region prefix']?.[0] || 'TBA',
+                    region,
+					prefix,
 					medium:    printouts['Medium']?.[0] || null,
 				} satisfies BoosterPack;
 			});
 
-			if (env.YGO_KV && packs.length > 0) {
+			/*if (env.YGO_KV && packs.length > 0) {
                 await env.YGO_KV.put(PACKS_CACHE_KEY, JSON.stringify(packs), {
                     expirationTtl: 86400,
                 });
-            }
+            }*/
 		}
 	}
 } catch (error) {
@@ -72,6 +93,11 @@ packs.sort((a, b) => b.timestamp - a.timestamp);
 ---
 
 <Layout title="Rush Duel Pack Simulator">
+    {/*import.meta.env.DEV && (
+        <pre style="background:#111;color:#0f0;padding:1rem;overflow:auto;">
+            {JSON.stringify(debugInfo, null, 2)}
+        </pre>
+    )*/}
     <header class="control-header">
         <div class="brand">
             <span class="rush-badge">RUSH DUEL</span>

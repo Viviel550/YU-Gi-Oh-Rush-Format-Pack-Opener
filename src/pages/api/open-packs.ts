@@ -1,5 +1,6 @@
 import type { APIContext } from 'astro';
-import { env } from 'cloudflare:workers'; // The Astro v6 / Cloudflare standard approach
+import { env } from 'cloudflare:workers';
+import cardIdsRaw from '../../data/card_ids.json'; // adjust path to your actual data folder
 
 // ── Rarity weights ────────────────────────────────────────────────────────────
 const RARITY_WEIGHTS: Record<string, number> = {
@@ -21,29 +22,37 @@ interface CardEntry {
     cardName:   string;
     cardNumber: string;
     rarities:   string[];
+    databaseId: number | null;
 }
 
-// ── Fetch & cache pack card list ──────────────────────────────────────────────
-// ── Fetch & cache pack card list ──────────────────────────────────────────────
-async function getPackCards(packName: string): Promise<CardEntry[]> {
-    // Fix: Convert all spaces to underscores to match Yugipedia's internal subobject naming convention
-    const normalizedPackName = packName.replace(/ /g, '_');
-    const cacheKey = `pack:${normalizedPackName}`;
+interface CardIdRecord {
+    id: number;
+    name: string;
+}
 
-    // Safety check for local environment bindings (Astro v6 standard)
-    if (!env.YGO_KV) {
-        throw new Error("YGO_KV is undefined. Please restart your dev server (npm run dev).");
-    }
+// ── Name normalization (shared between JSON lookup and API results) ──────────
+function normalizeName(name: string): string {
+    return name
+        .trim()
+        .toLowerCase()
+        .replace(/[’‘]/g, "'")
+        .replace(/\s+/g, ' ')
+        .replace(/[^\w\s']/g, '');
+}
 
-    // 1. Check KV cache using the normalized key
-    const cached = await env.YGO_KV.get(cacheKey);
-    if (cached) {
-        return JSON.parse(cached) as CardEntry[];
-    }
+// ── Build lookup once at module load — reused across all requests ────────────
+const cardIdLookup: Map<string, number> = new Map(
+    (cardIdsRaw as CardIdRecord[]).map(c => [normalizeName(c.name), c.id])
+);
 
-    // 2. Fetch from Yugipedia using the underscored name
+function resolveDatabaseId(cardName: string): number | null {
+    return cardIdLookup.get(normalizeName(cardName)) ?? null;
+}
+
+// ── Fetch & cache pack card list (JP first, KR fallback) ─────────────────────
+async function fetchCardsForRegion(normalizedPackName: string, region: 'OCG-JP' | 'OCG-KR'): Promise<CardEntry[]> {
     const query = encodeURIComponent(
-        `[[-Has subobject::Set Card Lists:${normalizedPackName} (OCG-JP)]]` +
+        `[[-Has subobject::Set Card Lists:${normalizedPackName} (${region})]]` +
         `|?Card number|?Rarity|?Set contains|limit=200`
     );
 
@@ -62,17 +71,38 @@ async function getPackCards(packName: string): Promise<CardEntry[]> {
     const data = await response.json();
     const results = data.query?.results ?? {};
 
-    const cards: CardEntry[] = Object.values(results).map((entry: any) => {
+    return Object.values(results).map((entry: any) => {
         const p = entry.printouts;
         const rawName = p['Set contains']?.[0]?.fulltext ?? '';
         const cardName = rawName.replace(/#.*$/, '').replace(/_/g, ' ').trim();
-
         return {
             cardName,
             cardNumber: p['Card number']?.[0] ?? '',
             rarities:   (p['Rarity'] ?? []).map((r: any) => r.fulltext),
+            databaseId: resolveDatabaseId(cardName),
         };
-    }).filter(c => c.cardName && c.cardNumber);
+    }).filter((c: CardEntry) => c.cardName && c.cardNumber);
+}
+
+async function getPackCards(packName: string): Promise<CardEntry[]> {
+    const normalizedPackName = packName.replace(/ /g, '_');
+    const cacheKey = `pack:${normalizedPackName}`;
+
+    if (!env.YGO_KV) {
+        throw new Error("YGO_KV is undefined. Please restart your dev server (npm run dev).");
+    }
+
+    // 1. Check KV cache
+    /*const cached = await env.YGO_KV.get(cacheKey);
+    if (cached) {
+        return JSON.parse(cached) as CardEntry[];
+    }*/
+
+    // 2. Try JP list first, fall back to KR if empty
+    let cards = await fetchCardsForRegion(normalizedPackName, 'OCG-JP');
+    if (cards.length === 0) {
+        cards = await fetchCardsForRegion(normalizedPackName, 'OCG-KR');
+    }
 
     // 3. Save to KV with 30-day TTL
     await env.YGO_KV.put(cacheKey, JSON.stringify(cards), {
@@ -120,7 +150,9 @@ export async function POST({ request, cookies }: APIContext) {
             return new Response(JSON.stringify({ error: 'Invalid payload' }), { status: 400 });
         }
 
+        const IMAGES_DB = env.IMAGES_DB;
         const results = [];
+        const unmatchedCards: string[] = [];
 
         for (const [packName, count] of Object.entries(body.packs)) {
             if (count <= 0) continue;
@@ -131,29 +163,39 @@ export async function POST({ request, cookies }: APIContext) {
                 const cards = rollCards(pool, CARDS_PER_PACK);
                 results.push({
                     packName,
-                    cards: cards.map(c => ({
-                        cardName:   c.cardName,
-                        cardNumber: c.cardNumber,
-                        rarity:     c.rarities[0] ?? 'Common',
-                        imgUrl: `https://yugipedia.com/Special:FilePath/${encodeURIComponent(c.cardName)}.png`,
-                                        
-
-                    })),
+                    cards: cards.map(c => {
+                        if (c.databaseId === null) {
+                            unmatchedCards.push(c.cardName);
+                        }
+                        return {
+                            cardName:   c.cardName,
+                            cardNumber: c.cardNumber,
+                            rarity:     c.rarities[0] ?? 'Common',
+                            databaseId: c.databaseId,
+                            imgUrl: c.databaseId !== null
+                                ? `${IMAGES_DB}/cards/${c.databaseId}`
+                                : null,
+                        };
+                    }),
                 });
             }
         }
+
+        if (unmatchedCards.length > 0) {
+            console.warn('Unmatched card names (no databaseId found):', [...new Set(unmatchedCards)]);
+        }
+
         const sessionId = crypto.randomUUID();
 
         await env.YGO_KV.put(`session:${sessionId}`, JSON.stringify(results), {
-            expirationTtl: 1800, 
+            expirationTtl: 1800,
         });
-        // Save results to cookie so /packs can read them without re-fetching
+
         cookies.set('pack_opening_id', sessionId, {
             path:    '/',
-            maxAge:  60 * 30, // 30 minutes
+            maxAge:  60 * 30,
             sameSite: 'lax',
-            secure: true, // Set to TRUE only if you are on https://
-            //httpOnly: false // If you need to debug the cookie in JS, ensure this is fals
+            secure: true,
         });
 
         return new Response(JSON.stringify({ success: true }), {
