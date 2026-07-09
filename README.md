@@ -85,6 +85,7 @@ The sample `wrangler.jsonc` also includes a `SESSION` KV binding, but the app co
 ## Roadmap
 
 - Tighten data validation and error handling.
+- Fix KR only packs not opening
 - Improve pack presentation for a more complete release.
 
 ## License
