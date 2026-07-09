@@ -14,7 +14,8 @@
 	},
 	"vars": {
 		"BACKEND_URL": "https://yugipedia.com/api.php",
-		"IMAGES_DB": ""
+		"IMAGES_DB": "https://viviel550.github.io/ygo-rush-cards-images/images",
+		"PACKS_DB": "https://viviel550.github.io/ygo-rush-cards-images/packs"
 	},
 	"kv_namespaces": [
 		{

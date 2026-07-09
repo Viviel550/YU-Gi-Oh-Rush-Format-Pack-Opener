@@ -5,7 +5,7 @@ import type { BoosterPack } from '../types/Boosterpack';
 
 // env bindings are NOT promises — no await needed
 const YUGIPEDIA_URL = env.BACKEND_URL;
-const IMAGE_URL = env.IMAGE_DB;
+const PACKS_URL = env.PACKS_DB;
 const PACKS_CACHE_KEY = 'booster_packs_list';
 let packs: BoosterPack[] = [];
 //const debugInfo: any[] = [];
@@ -56,7 +56,7 @@ try {
                     krPrefix: printouts['Korean set and region prefix'],
                 });*/
 				const imageName = printouts['Set image']?.[0];
-				const imgUrl = IMAGE_URL + `/${imageName}`;
+				const imgUrl = PACKS_URL + `/${imageName}`;
 				const jpTimestamp = extractTimestamp(printouts['Japanese release date']?.[0]);
                 const krTimestamp = extractTimestamp(printouts['Korean release date']?.[0]);
                 const timestamp = jpTimestamp ?? krTimestamp ?? 0;
@@ -131,6 +131,7 @@ packs.sort((a, b) => b.timestamp - a.timestamp);
     ) : (
         <div class="packs-grid" id="main-grid">
             {packs.map((pack) => (
+            
                 <div
                     class="pack-card"
                     data-pack-id={pack.id}
@@ -144,7 +145,7 @@ packs.sort((a, b) => b.timestamp - a.timestamp);
                         </div>
 
                         <div class="pack-art-container">
-                            {pack.imgUrl ? (
+                            {pack.imgUrl && pack.prefix != `TBA` ? (
                                 <img src={pack.imgUrl} alt={pack.title} loading="lazy" />
                             ) : (
                                 <div class="matrix-code">IMAGE NOT FOUND</div>
