@@ -13,9 +13,8 @@ It currently provides the basic loop for browsing Rush Duel booster packs, selec
 
 ## Known Limitations
 
-- Card images are incomplete for now there is only text-only display.
-- There is no export to `.ydk` deck format yet.
-- This is a heavy alpha build, so behavior and data quality may still change.
+- Card images are incomplete for now there is text-only display for packs, it is possible to add cards display by adding path to env 'IMAGES_DB' that would point to storage with cards images in .jpg format.
+- This is a alpha build, so behavior and data quality may still change.
 
 ## Tech Stack
 
@@ -73,7 +72,7 @@ The app expects the following Cloudflare bindings:
 
 - `BACKEND_URL` — Yugipedia API endpoint, currently set to `https://yugipedia.com/api.php`.
 - `YGO_KV` — KV namespace used for caching and opening sessions.
-
+- `IMAGES_DB` — Optional env variable that is used for displaying images for cards, in case of use the images must be in .jpg format and their filename must corespond to their card ID used in Project Ignis
 The sample `wrangler.jsonc` also includes a `SESSION` KV binding, but the app code currently uses `YGO_KV` for storage.
 
 ## How It Works
@@ -85,10 +84,8 @@ The sample `wrangler.jsonc` also includes a `SESSION` KV binding, but the app co
 
 ## Roadmap
 
-- Improve card artwork handling.
-- Add `.ydk` export support.
 - Tighten data validation and error handling.
-- Improve pack and card presentation for a more complete release.
+- Improve pack presentation for a more complete release.
 
 ## License
 

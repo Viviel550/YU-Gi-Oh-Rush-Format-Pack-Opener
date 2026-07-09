@@ -173,7 +173,7 @@ export async function POST({ request, cookies }: APIContext) {
                             rarity:     c.rarities[0] ?? 'Common',
                             databaseId: c.databaseId,
                             imgUrl: c.databaseId !== null
-                                ? `${IMAGES_DB}/cards/${c.databaseId}`
+                                ? `${IMAGES_DB}/${c.databaseId}.jpg`
                                 : null,
                         };
                     }),
